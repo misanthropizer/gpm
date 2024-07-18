@@ -6,10 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"net/http"
-	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/ProtonMail/gopenpgp/v2/helper"
@@ -72,49 +71,6 @@ func getNameFromKey(key string) (string, error) {
 	return "", fmt.Errorf("no identity found in key")
 }
 
-// ///////////////////////////////PASTEBIN/////////////////////////////////////////////////////////
-func postToPastebin(apiKey, userKey, encryptedMessage string) (string, error) {
-	data := url.Values{
-		"api_dev_key":       {apiKey},
-		"api_user_key":      {userKey},
-		"api_option":        {"paste"},
-		"api_paste_code":    {encryptedMessage},
-		"api_paste_private": {"1"}, // 1 = unlisted, 2 = private
-	}
-
-	resp, err := http.PostForm("https://pastebin.com/api/api_post.php", data)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(body), nil
-}
-func getPastebinUserKey(apiKey, username, password string) (string, error) {
-	data := url.Values{
-		"api_dev_key":       {apiKey},
-		"api_user_name":     {username},
-		"api_user_password": {password},
-	}
-
-	resp, err := http.PostForm("https://pastebin.com/api/api_login.php", data)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(body), nil
-}
 
 // /////////////////////////////MAIN///////////////////////////////////
 func main() {
@@ -191,7 +147,8 @@ func main() {
 
 	for {
 		fmt.Println("1 | Send Message")
-		fmt.Println("2 | Receive Message")
+		fmt.Println("2 | Receive Message (auto)")
+		fmt.Println("3 | Receive Message")
 		fmt.Print("Enter an option: ")
 
 		var option int
@@ -220,16 +177,61 @@ func main() {
 			fmt.Print("Enter passphrase for private key: ")
 			var passphrase string
 			fmt.Scan(&passphrase)
-			fmt.Print("Enter message to decrypt: ")
-			var encryptedMessage string
-			reader := bufio.NewReader(os.Stdin)
-			encryptedMessage, _ = reader.ReadString('\n')
-			decryptedMessage, err := decryptMessage(config.PrivateKey, passphrase, strings.TrimSpace(encryptedMessage))
+			fmt.Print("Enter the Pastebin username of the sender: ")
+			var senderUsername string
+			fmt.Scan(&senderUsername)
+			userKey, err := getPastebinUserKey(config.PastebinAPIKey, config.Username, config.Password)
+			if err != nil {
+				fmt.Println("Failed to get Pastebin user key:", err)
+				return
+			}
+
+			for {
+				pasteIDs, err := getUserPastes(config.PastebinAPIKey, userKey)
+				if err != nil {
+					fmt.Println("Failed to get user pastes:", err)
+					continue
+				}
+
+				for _, pasteID := range pasteIDs {
+					encryptedMessage, err := getPasteContent(pasteID)
+					if err != nil {
+						fmt.Println("Failed to get paste content:", err)
+						continue
+					}
+
+					decryptedMessage, err := decryptMessage(config.PrivateKey, passphrase, encryptedMessage)
+					if err != nil {
+						fmt.Println("Failed to decrypt message:", err)
+						continue
+					}
+
+					fmt.Printf("%s: %s\n", senderUsername, decryptedMessage)
+				}
+
+				fmt.Println("Waiting for new messages...")
+				time.Sleep(30 * time.Second) // Adjust polling interval as needed
+			}
+		case 3:
+			fmt.Print("Enter the Pastebin link: ")
+			var pastebinLink string
+			fmt.Scan(&pastebinLink)
+			pasteID := strings.TrimPrefix(pastebinLink, "https://pastebin.com/")
+			pasteID = strings.TrimSuffix(pasteID, "\n")
+			encryptedMessage, err := getPasteContent(pasteID)
+			if err != nil {
+				fmt.Println("Failed to get paste content:", err)
+				continue
+			}
+			fmt.Print("Enter passphrase for private key: ")
+			var passphrase string
+			fmt.Scan(&passphrase)
+			decryptedMessage, err := decryptMessage(config.PrivateKey, passphrase, encryptedMessage)
 			if err != nil {
 				fmt.Println("Failed to decrypt message:", err)
 				continue
 			}
-			fmt.Printf("%s: %s\n", publicKeyName, decryptedMessage)
+			fmt.Printf("Decrypted message: %s\n", decryptedMessage)
 		default:
 			fmt.Println("Invalid option")
 		}
