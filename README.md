@@ -2,7 +2,7 @@
 
 ## Overview
 
-GNU Private Messenger (gpm) is a secure and private messaging application for nerds.
+GNU Private Messenger (gpm) is a secure and private messaging application for nerds using pastebin as a message host.
 
 ## Features
 
