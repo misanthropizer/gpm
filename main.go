@@ -1,23 +1,33 @@
 package main
 
+//////////////////////////////////////////////////////////////////
 import (
 	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
+
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/ProtonMail/gopenpgp/v2/helper"
 )
 
+// ////////////////////////////////////////////////////////////////
 type Config struct {
-	PrivateKey string `json:"private_key"`
-	PublicKey  string `json:"public_key"`
+	PrivateKey      string `json:"private_key"`
+	PublicKey       string `json:"public_key"`
+	PastebinAPIKey  string `json:"pastebin_api_key"`
+	PastebinUserKey string `json:"pastebin_user_key"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
 }
 
 const configFilePath = "./config.json"
 
+// ///////////////////////////CONFIG//////////////////////////////
 func loadConfig() (*Config, error) {
 	file, err := ioutil.ReadFile(configFilePath)
 	if err != nil {
@@ -38,6 +48,7 @@ func saveConfig(config *Config) error {
 	return ioutil.WriteFile(configFilePath, data, 0644)
 }
 
+// /////////////////////////GPG HANDLING////////////////////
 func encryptMessage(publicKey string, message string) (string, error) {
 	return helper.EncryptMessageArmored(publicKey, message)
 }
@@ -46,6 +57,7 @@ func decryptMessage(privateKey string, passphrase string, encryptedMessage strin
 	return helper.DecryptMessageArmored(privateKey, []byte(passphrase), encryptedMessage)
 }
 
+// ///////////////////DATA EXTRACTION/////////////////////////////////////////////
 func getNameFromKey(key string) (string, error) {
 	keyObj, err := crypto.NewKeyFromArmored(key)
 	if err != nil {
@@ -60,6 +72,51 @@ func getNameFromKey(key string) (string, error) {
 	return "", fmt.Errorf("no identity found in key")
 }
 
+// ///////////////////////////////PASTEBIN/////////////////////////////////////////////////////////
+func postToPastebin(apiKey, userKey, encryptedMessage string) (string, error) {
+	data := url.Values{
+		"api_dev_key":       {apiKey},
+		"api_user_key":      {userKey},
+		"api_option":        {"paste"},
+		"api_paste_code":    {encryptedMessage},
+		"api_paste_private": {"1"}, // 1 = unlisted, 2 = private
+	}
+
+	resp, err := http.PostForm("https://pastebin.com/api/api_post.php", data)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+func getPastebinUserKey(apiKey, username, password string) (string, error) {
+	data := url.Values{
+		"api_dev_key":       {apiKey},
+		"api_user_name":     {username},
+		"api_user_password": {password},
+	}
+
+	resp, err := http.PostForm("https://pastebin.com/api/api_login.php", data)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+// /////////////////////////////MAIN///////////////////////////////////
 func main() {
 	if _, err := os.Stat(configFilePath); os.IsNotExist(err) {
 		fmt.Println("Config file not found. Creating a new one.")
@@ -91,19 +148,27 @@ func main() {
 		}
 		config.PublicKey = publicKey.String()
 
+		fmt.Println("Enter your Pastebin API key: ")
+		config.PastebinAPIKey, _ = reader.ReadString('\n')
+		config.PastebinAPIKey = strings.TrimSpace(config.PastebinAPIKey)
+		fmt.Println("Enter your Pastebin username: ")
+		config.Username, _ = reader.ReadString('\n')
+		config.Username = strings.TrimSpace(config.Username)
+		fmt.Println("Enter your Pastebin password: ")
+		config.Password, _ = reader.ReadString('\n')
+		config.Password = strings.TrimSpace(config.Password)
 		if err := saveConfig(&config); err != nil {
 			fmt.Println("Failed to save config:", err)
 			return
 		}
 		fmt.Println("Config saved.")
 	}
-
+	/////////////////ERROR/////////////////////////////////////////////////
 	config, err := loadConfig()
 	if err != nil {
 		fmt.Println("Failed to load config:", err)
 		return
 	}
-
 	privateKeyName, err := getNameFromKey(config.PrivateKey)
 	if err != nil {
 		fmt.Println("Failed to get name from private key:", err)
@@ -114,7 +179,12 @@ func main() {
 		fmt.Println("Failed to get name from public key:", err)
 		return
 	}
-
+	config.PastebinUserKey, err = getPastebinUserKey(config.PastebinAPIKey, config.Username, config.Password)
+	if err != nil {
+		fmt.Println("Failed to get Pastebin user key:", err)
+		return
+	}
+	/////////////////CLI MENU/////////////////////////////////////////////////
 	fmt.Println("Welcome to GPG Chat")
 	fmt.Println("You:", privateKeyName)
 	fmt.Println("Chat Partner:", publicKeyName)
@@ -138,6 +208,13 @@ func main() {
 				fmt.Println("Failed to encrypt message:", err)
 				continue
 			}
+
+			pastebinLink, err := postToPastebin(config.PastebinAPIKey, config.PastebinUserKey, encryptedMessage)
+			if err != nil {
+				fmt.Println("Failed to post to Pastebin:", err)
+				continue
+			}
+			fmt.Println("Message posted to Pastebin:", pastebinLink)
 			fmt.Println("Encrypted message:", encryptedMessage)
 		case 2:
 			fmt.Print("Enter passphrase for private key: ")
@@ -154,7 +231,7 @@ func main() {
 			}
 			fmt.Printf("%s: %s\n", publicKeyName, decryptedMessage)
 		default:
-			fmt.Println("Invalid option, stop fucking with it!")
+			fmt.Println("Invalid option")
 		}
 	}
 }
